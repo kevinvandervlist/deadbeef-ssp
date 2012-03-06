@@ -1,0 +1,175 @@
+/*
+  ssp - Plugin for DeaDBeeF to auto pause songs 
+  when the screen is locked. After unlocking, the playing is resumed. 
+  Based on the notify plugin from Alexey Yakovenko
+
+  Copyright (C) 2010-2011 Kevin van der Vlist <kevin@kevinvandervlist.nl>
+
+  This program is free software; you can redistribute it and/or
+  modify it under the terms of the GNU General Public License
+  as published by the Free Software Foundation; either version 2
+  of the License, or (at your option) any later version.
+    
+  This program is distributed in the hope that it will be useful,
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  GNU General Public License for more details.
+    
+  You should have received a copy of the GNU General Public License
+  along with this program; if not, write to the Free Software
+  Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+*/
+#include <deadbeef/deadbeef.h>
+#include <stdio.h>
+#include <dbus/dbus.h>
+#include <config.h>
+
+#ifdef HAVE_LIBGLIB_2_0
+#include <dbus/dbus-glib.h>
+#include <dbus/dbus-glib-lowlevel.h>
+#include <glib.h>
+#endif
+
+#ifdef HAVE_LIBPTHREAD
+#include <pthread.h>
+#endif
+
+#ifdef HAVE_UNISTD_H
+#include <unistd.h>
+#endif
+
+DB_functions_t *deadbeef;
+DB_misc_t plugin;
+
+DBusConnection *connection;
+
+/**
+ * Settings dialog string. Enabled or disabled. 
+ */
+
+static const char settings_dlg[] = "property \"Enable\" checkbox ssp.enable 0;\n";
+
+/**
+ * Plugin struct info. 
+ */
+
+DB_misc_t plugin = {
+  .plugin.type = DB_PLUGIN_MISC,
+  .plugin.api_vmajor = 1,
+  .plugin.api_vminor = 0,
+  .plugin.version_major = 0,
+  .plugin.version_minor = 2,
+  .plugin.id = "libssp",
+  .plugin.name = "Screen Saver Pause",
+  .plugin.descr = "Screen Saver Pause - Plugin for DeaDBeeF.\nAuto pause songs when the screen is locked.\nAfter unlocking, the playing is resumed.\n",
+  .plugin.website = "http://code.google.com/p/deadbeef-ssp/",
+  .plugin.copyright = 
+  "Based on the notify plugin from Alexey Yakovenko\n\n"
+  "Copyright (C) 2010-2011 Kevin van der Vlist <kevin@kevinvandervlist.nl>\n\n"
+"This program is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation; either version 2 of the License, or (at your option) any later version. This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.\n\n"
+"You should have received a copy of the GNU General Public License along with this program; if not, write to the Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.\n"
+  ,
+  .plugin.configdialog = settings_dlg,
+};
+
+/**
+ * Toggle the play status of a song. 
+ * Retrieve it from DeaDBeeF, and invert it. 
+ */
+
+void toggle_play_status() {
+  // Plugin enabled - do the actual toggling. 
+  if(deadbeef->conf_get_int("ssp.enable", 0)) {
+    // If the state is needed:
+    //int state = deadbeef->get_output()->state();
+    deadbeef->sendmessage(OUTPUT_STATE_PAUSED, 0, 0, 0);
+  }
+}
+
+/**
+ * Filter the DBUS signals to check if there is a screensaver/lock signal. 
+ */
+
+DBusHandlerResult dbus_filter(DBusConnection *connection, DBusMessage *message, void *user_data) {
+  // KDE
+  if(dbus_message_is_signal(message,"org.freedesktop.ScreenSaver","ActiveChanged")) {
+    toggle_play_status();
+    return DBUS_HANDLER_RESULT_HANDLED;
+  }
+  // Gnome
+  if(dbus_message_is_signal(message,"org.gnome.ScreenSaver","SessionIdleChanged")) {
+    toggle_play_status();
+    return DBUS_HANDLER_RESULT_HANDLED;
+  }
+  // Gnome 2.30 - Thanks bwtari
+  if(dbus_message_is_signal(message,"org.gnome.ScreenSaver","ActiveChanged")) {
+    toggle_play_status();
+    return DBUS_HANDLER_RESULT_HANDLED;
+  }
+  // Gnome + ubuntu
+  if(dbus_message_is_signal(message,"org.gnome.SessionManager.Presence","StatusChanged")) {
+    toggle_play_status();
+    return DBUS_HANDLER_RESULT_HANDLED;
+  }
+  return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+}
+
+#ifdef HAVE_LIBPTHREAD
+/**
+ * Do the polling for dbus events with a pthread + sleep
+ */
+
+void *pthread_poll() {
+  while(1) {
+    dbus_connection_read_write(connection, 0);
+    DBusMessage *mes = dbus_connection_pop_message(connection);
+    if(mes != NULL) {
+      dbus_filter(connection, mes, NULL);
+    }
+    sleep(1);
+  }
+}
+#endif
+
+/**
+ * Initialize the plugin. 
+ */
+
+DB_plugin_t *libssp_load (DB_functions_t *ddb) {
+  deadbeef = ddb;
+
+  DBusError error;
+#ifdef HAVE_LIBGLIB_2_0
+  /* glib main loop */
+  GMainLoop *loop;
+  loop = g_main_loop_new(NULL,FALSE);
+#endif
+  dbus_error_init(&error);
+  connection = dbus_bus_get(DBUS_BUS_SESSION, &error);
+  if(dbus_error_is_set(&error)) {
+    printf("Error connecting to the daemon bus: %s",error.message);
+    dbus_error_free(&error);
+  }
+
+  // The interfaces to listen on:
+
+  // KDE 
+  dbus_bus_add_match (connection, "type='signal',interface='org.freedesktop.ScreenSaver'", NULL);
+  // Gnome
+  dbus_bus_add_match (connection, "type='signal',interface='org.gnome.ScreenSaver'", NULL);
+  // Gnome + ubuntu
+  dbus_bus_add_match (connection, "type='signal',interface='org.gnome.SessionManager.Presence'", NULL);
+
+#ifdef HAVE_LIBGLIB_2_0
+  dbus_connection_add_filter (connection, dbus_filter, loop, NULL);
+  /* dbus-glib call */
+  dbus_connection_setup_with_g_main(connection,NULL);
+#endif
+
+#ifdef HAVE_LIBPTHREAD
+  pthread_t poll;
+  pthread_create(&poll, NULL, pthread_poll, NULL);
+#endif
+
+  return &plugin.plugin;
+}
