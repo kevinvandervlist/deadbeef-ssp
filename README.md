@@ -15,6 +15,16 @@ second, and then goes to sleep again.
 
 This plugin is released under the terms of the GPLv2. 
 
+# Installation:
+
+    git clone git://github.com/kevinvandervlist/deadbeef-ssp.git; cd deadbeef-ssp
+OR
+    wget https://github.com/kevinvandervlist/deadbeef-ssp/zipball/master -O deadbeef-ssp.zip; unzip deadbeef-ssp.zip; cd kevinvandervlist-deadbeef-ssp*
+
+    ./configure --prefix=~/.local
+    make
+    make install
+
 **summary A list of known supported WM's.**
 
 These, and possibly more, window managers are supported. Feel free to add a custom, verified version. 
